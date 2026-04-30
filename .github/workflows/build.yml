@@ -1,0 +1,96 @@
+# .github/workflows/build.yml
+name: Build OLLVM for Android arm64 (Termux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要构建的分支'
+        required: true
+        default: 'master'
+
+env:
+  ANDROID_NDK_VERSION: r25c
+  ANDROID_API: 21                           # Termux 兼容的 API 级别
+  ANDROID_ABI: arm64-v8a
+  INSTALL_DIR: ${{ github.workspace }}/install
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout specified branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          submodules: true
+
+      - name: Install host dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build python3
+
+      - name: Download and setup Android NDK
+        run: |
+          NDK_ZIP="android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
+          NDK_SHA256="6164c188c55ddb9f68a2ca83ff65cc07467c84a24d6f6894dd1f7326279f34e5"  # r25c
+          curl -L -o $NDK_ZIP https://dl.google.com/android/repository/$NDK_ZIP
+          echo "${NDK_SHA256}  ${NDK_ZIP}" | sha256sum -c -
+          unzip -q $NDK_ZIP
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+
+      # 1. 构建宿主工具 (llvm-tblgen / clang-tblgen)
+      - name: Build host tools (tablegen)
+        run: |
+          mkdir build-host
+          cd build-host
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_ENABLE_PROJECTS="clang" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            ../llvm
+          ninja llvm-tblgen clang-tblgen
+          echo "LLVM_TABLEGEN=$PWD/bin/llvm-tblgen" >> $GITHUB_ENV
+          echo "CLANG_TABLEGEN=$PWD/bin/clang-tblgen" >> $GITHUB_ENV
+        working-directory: ${{ github.workspace }}
+
+      # 2. 交叉编译 OLLVM (目标 Android/arm64)
+      - name: Configure cross-compilation for arm64
+        run: |
+          mkdir build-android
+          cd build-android
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=${ANDROID_API} \
+            -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
+            -DCMAKE_ANDROID_NDK=${ANDROID_NDK_HOME} \
+            -DCMAKE_ANDROID_STANDALONE_TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-android \
+            -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_TABLEGEN=${LLVM_TABLEGEN} \
+            -DCLANG_TABLEGEN=${CLANG_TABLEGEN} \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
+            ../llvm
+        working-directory: ${{ github.workspace }}
+
+      - name: Build and install
+        run: |
+          cd build-android
+          ninja -j$(nproc) install/strip
+
+      # 3. 打包产物
+      - name: Package artifacts
+        run: |
+          tar -cJf ollvm-android-arm64.tar.xz -C ${INSTALL_DIR} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollvm-android-arm64
+          path: ollvm-android-arm64.tar.xz
