@@ -29,14 +29,14 @@ jobs:
           sudo apt update
           sudo apt install -y cmake ninja-build python3
 
-      - name: Download Android NDK
+      - name: Download Android NDK (skip checksum)
         run: |
           NDK_ZIP="android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
           curl -L -o $NDK_ZIP https://dl.google.com/android/repository/$NDK_ZIP
           unzip -q $NDK_ZIP
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
-      # 构建宿主 tablegen 工具
+      # 1. 构建宿主 tablegen 工具
       - name: Build host tools (tablegen)
         run: |
           mkdir build-host && cd build-host
@@ -52,7 +52,7 @@ jobs:
           echo "CLANG_TABLEGEN=$PWD/bin/clang-tblgen" >> $GITHUB_ENV
         working-directory: ${{ github.workspace }}
 
-      # 交叉编译
+      # 2. 交叉编译 OLLVM (目标 Android/arm64)
       - name: Configure and build OLLVM for arm64
         run: |
           mkdir build-android && cd build-android
@@ -70,12 +70,13 @@ jobs:
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
             -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
             ../llvm
           ninja -j$(nproc) install/strip
         working-directory: ${{ github.workspace }}
 
-      # 打包
+      # 3. 打包产物
       - name: Package artifacts
         run: tar -cJf ollvm-android-arm64.tar.xz -C ${INSTALL_DIR} .
 
