@@ -78,29 +78,34 @@ jobs:
           ninja -j$(nproc) install/strip
         working-directory: ${{ github.workspace }}
 
-      # 3. 准备打包产物（包含 cmake 和 ninja）
+      # 3. 准备打包产物（包含 cmake 和 ninja，并替换 clang 符号链接）
       - name: Prepare package with outer directory and extra tools
         run: |
-          # 创建临时打包目录
+          # 创建临时打包目录，外层为 ollvm-android-arm64
           mkdir -p package/ollvm-android-arm64
           cp -r ${INSTALL_DIR}/* package/ollvm-android-arm64/
 
-          # 下载 arm64 版本的 cmake 和 ninja
-          cd package/ollvm-android-arm64/bin
+          # ---------- 下载并安装 CMake (aarch64) ----------
+          CMAKE_VERSION="3.29.6"
+          curl -L -o /tmp/cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz"
+          mkdir -p /tmp/cmake_extract
+          tar -xzf /tmp/cmake.tar.gz -C /tmp/cmake_extract
+          # 复制 bin/cmake 到目标 bin 目录
+          cp /tmp/cmake_extract/cmake-${CMAKE_VERSION}-linux-aarch64/bin/cmake package/ollvm-android-arm64/bin/
+          chmod +x package/ollvm-android-arm64/bin/cmake
+          # 可选：同时复制 ccmake 和 ctest（若需要）
+          cp /tmp/cmake_extract/cmake-${CMAKE_VERSION}-linux-aarch64/bin/ccmake package/ollvm-android-arm64/bin/ 2>/dev/null || true
+          cp /tmp/cmake_extract/cmake-${CMAKE_VERSION}-linux-aarch64/bin/ctest package/ollvm-android-arm64/bin/ 2>/dev/null || true
 
-          # 下载 cmake (aarch64)
-          CMAKE_VERSION="3.29.3"
-          curl -L -o cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz"
-          tar -xzf cmake.tar.gz --strip-components=1 -C . --wildcards '*/bin/cmake' '*/bin/ccmake' '*/bin/ctest' 2>/dev/null || true
-          rm -f cmake.tar.gz
-
-          # 下载 ninja (aarch64)
+          # ---------- 下载并安装 Ninja (aarch64) ----------
           NINJA_VERSION="1.12.1"
-          curl -L -o ninja.zip "https://github.com/ninja-build/ninja/releases/download/v${NINJA_VERSION}/ninja-linux-aarch64.zip"
-          unzip -o ninja.zip
-          rm -f ninja.zip
+          curl -L -o /tmp/ninja.zip "https://github.com/ninja-build/ninja/releases/download/v${NINJA_VERSION}/ninja-linux-aarch64.zip"
+          unzip -o /tmp/ninja.zip -d /tmp/
+          cp /tmp/ninja package/ollvm-android-arm64/bin/
+          chmod +x package/ollvm-android-arm64/bin/ninja
 
-          # 处理 clang 符号链接
+          # ---------- 处理 clang/clang++ 符号链接 ----------
+          cd package/ollvm-android-arm64/bin
           CLANG_VERSION=$(ls clang-* 2>/dev/null | head -1 | sed 's/clang-//')
           if [ -n "$CLANG_VERSION" ]; then
             for f in clang clang++; do
@@ -111,13 +116,9 @@ jobs:
               fi
             done
           fi
-
-          # 给所有可执行文件添加执行权限
-          chmod +x cmake ninja clang* lld* 2>/dev/null || true
-
           cd ../../..
 
-          # 打包（使用 gzip 加速）
+          # ---------- 打包（使用 gzip 压缩，速度更快） ----------
           tar -czf ollvm-android-arm64.tar.gz -C package ollvm-android-arm64
 
       - name: Upload artifact
