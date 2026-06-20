@@ -23,6 +23,8 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch }}
           submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install host dependencies
         run: |
@@ -76,34 +78,50 @@ jobs:
           ninja -j$(nproc) install/strip
         working-directory: ${{ github.workspace }}
 
-      # 3. 准备打包产物（添加外层目录，并替换符号链接为实际文件）
-      - name: Prepare package with outer directory and real clang files
+      # 3. 准备打包产物（包含 cmake 和 ninja）
+      - name: Prepare package with outer directory and extra tools
         run: |
-          # 创建临时打包目录，内层为 ollvm-android-arm64
+          # 创建临时打包目录
           mkdir -p package/ollvm-android-arm64
-          # 复制安装好的所有内容
           cp -r ${INSTALL_DIR}/* package/ollvm-android-arm64/
 
-          # 进入 bin 目录处理符号链接
+          # 下载 arm64 版本的 cmake 和 ninja
           cd package/ollvm-android-arm64/bin
-          # 将 clang 和 clang++ 符号链接替换为 clang-<version> 的副本
-          # 先获取 clang 的真实版本号（例如 clang-21）
-          CLANG_VERSION=$(ls clang-* | head -1 | sed 's/clang-//')
-          for f in clang clang++; do
-            if [ -L "$f" ]; then
-              rm "$f"
-              cp "clang-${CLANG_VERSION}" "$f"
-              chmod +x "$f"
-            fi
-          done
+
+          # 下载 cmake (aarch64)
+          CMAKE_VERSION="3.29.3"
+          curl -L -o cmake.tar.gz "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz"
+          tar -xzf cmake.tar.gz --strip-components=1 -C . --wildcards '*/bin/cmake' '*/bin/ccmake' '*/bin/ctest' 2>/dev/null || true
+          rm -f cmake.tar.gz
+
+          # 下载 ninja (aarch64)
+          NINJA_VERSION="1.12.1"
+          curl -L -o ninja.zip "https://github.com/ninja-build/ninja/releases/download/v${NINJA_VERSION}/ninja-linux-aarch64.zip"
+          unzip -o ninja.zip
+          rm -f ninja.zip
+
+          # 处理 clang 符号链接
+          CLANG_VERSION=$(ls clang-* 2>/dev/null | head -1 | sed 's/clang-//')
+          if [ -n "$CLANG_VERSION" ]; then
+            for f in clang clang++; do
+              if [ -L "$f" ]; then
+                rm "$f"
+                cp "clang-${CLANG_VERSION}" "$f"
+                chmod +x "$f"
+              fi
+            done
+          fi
+
+          # 给所有可执行文件添加执行权限
+          chmod +x cmake ninja clang* lld* 2>/dev/null || true
+
           cd ../../..
 
-          # 现在 package/ollvm-android-arm64 就是我们要打包的根目录
-          # 压缩时保留外层目录 ollvm-android-arm64
-          tar -cJf ollvm-android-arm64.tar.xz -C package ollvm-android-arm64
+          # 打包（使用 gzip 加速）
+          tar -czf ollvm-android-arm64.tar.gz -C package ollvm-android-arm64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ollvm-android-arm64
-          path: ollvm-android-arm64.tar.xz
+          path: ollvm-android-arm64.tar.gz
