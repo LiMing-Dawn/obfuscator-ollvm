@@ -76,9 +76,31 @@ jobs:
           ninja -j$(nproc) install/strip
         working-directory: ${{ github.workspace }}
 
-      # 3. 打包产物
-      - name: Package artifacts
-        run: tar -cJf ollvm-android-arm64.tar.xz -C ${INSTALL_DIR} .
+      # 3. 准备打包产物（添加外层目录，并替换符号链接为实际文件）
+      - name: Prepare package with outer directory and real clang files
+        run: |
+          # 创建临时打包目录，内层为 ollvm-android-arm64
+          mkdir -p package/ollvm-android-arm64
+          # 复制安装好的所有内容
+          cp -r ${INSTALL_DIR}/* package/ollvm-android-arm64/
+
+          # 进入 bin 目录处理符号链接
+          cd package/ollvm-android-arm64/bin
+          # 将 clang 和 clang++ 符号链接替换为 clang-<version> 的副本
+          # 先获取 clang 的真实版本号（例如 clang-21）
+          CLANG_VERSION=$(ls clang-* | head -1 | sed 's/clang-//')
+          for f in clang clang++; do
+            if [ -L "$f" ]; then
+              rm "$f"
+              cp "clang-${CLANG_VERSION}" "$f"
+              chmod +x "$f"
+            fi
+          done
+          cd ../../..
+
+          # 现在 package/ollvm-android-arm64 就是我们要打包的根目录
+          # 压缩时保留外层目录 ollvm-android-arm64
+          tar -cJf ollvm-android-arm64.tar.xz -C package ollvm-android-arm64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
