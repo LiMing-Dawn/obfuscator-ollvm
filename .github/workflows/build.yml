@@ -1,80 +1,154 @@
-name: Test Termux Extract (cmake & ninja)
+name: Build OLLVM for Android arm64 (Termux)
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: '要构建的分支'
+        required: true
+        default: 'master'
+
+env:
+  ANDROID_NDK_VERSION: r25c
+  ANDROID_API: 21
+  ANDROID_ABI: arm64-v8a
+  INSTALL_DIR: ${{ github.workspace }}/install
 
 jobs:
-  extract-test:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install dependencies
+      - name: Checkout specified branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install host dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl file
+          sudo apt install -y cmake ninja-build python3
 
-      - name: Download Termux Packages file
+      - name: Download Android NDK (skip checksum)
         run: |
-          curl -L -o Packages https://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
-          echo "Packages file downloaded:"
-          head -n 20 Packages
+          NDK_ZIP="android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
+          curl -L -o $NDK_ZIP https://dl.google.com/android/repository/$NDK_ZIP
+          unzip -q $NDK_ZIP
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
-      - name: Extract deb URLs for cmake and ninja
-        id: get_urls
+      # 1. 构建宿主 tablegen 工具
+      - name: Build host tools (tablegen)
         run: |
-          CMAKE_PATH=$(awk '/^Package: cmake$/{flag=1} flag && /^Filename: /{print $2; exit}' Packages)
-          NINJA_PATH=$(awk '/^Package: ninja$/{flag=1} flag && /^Filename: /{print $2; exit}' Packages)
-          echo "CMAKE_PATH=$CMAKE_PATH" >> $GITHUB_ENV
-          echo "NINJA_PATH=$NINJA_PATH" >> $GITHUB_ENV
-          echo "CMAKE_URL=https://packages.termux.org/apt/termux-main/$CMAKE_PATH" >> $GITHUB_ENV
-          echo "NINJA_URL=https://packages.termux.org/apt/termux-main/$NINJA_PATH" >> $GITHUB_ENV
-          echo "CMake path: $CMAKE_PATH"
-          echo "Ninja path: $NINJA_PATH"
+          mkdir build-host && cd build-host
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_ENABLE_PROJECTS="clang" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            ../llvm
+          ninja llvm-tblgen clang-tblgen
+          echo "LLVM_TABLEGEN=$PWD/bin/llvm-tblgen" >> $GITHUB_ENV
+          echo "CLANG_TABLEGEN=$PWD/bin/clang-tblgen" >> $GITHUB_ENV
+        working-directory: ${{ github.workspace }}
 
-      - name: Download deb files
+      # 2. 交叉编译 OLLVM (目标 Android/arm64)
+      - name: Configure and build OLLVM for arm64
         run: |
-          curl -L -o cmake.deb "$CMAKE_URL"
-          curl -L -o ninja.deb "$NINJA_URL"
-          ls -lh *.deb
-          file cmake.deb
-          file ninja.deb
+          mkdir build-android && cd build-android
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_SYSTEM_VERSION=${ANDROID_API} \
+            -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
+            -DCMAKE_ANDROID_NDK=${ANDROID_NDK_HOME} \
+            -DCMAKE_ANDROID_STANDALONE_TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-android \
+            -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_TABLEGEN=${LLVM_TABLEGEN} \
+            -DCLANG_TABLEGEN=${CLANG_TABLEGEN} \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
+            ../llvm
+          ninja -j$(nproc) install/strip
+        working-directory: ${{ github.workspace }}
 
-      - name: Extract cmake deb
+      # 3. 准备打包产物（包含 cmake 和 ninja，从 Termux 动态获取）
+      - name: Prepare package with outer directory and extra tools from Termux
         run: |
-          mkdir cmake_extract
-          cd cmake_extract
-          ar x ../cmake.deb
+          # 创建临时打包目录，外层为 ollvm-android-arm64
+          mkdir -p package/ollvm-android-arm64
+          cp -r ${INSTALL_DIR}/* package/ollvm-android-arm64/
+
+          # ---------- 从 Termux 仓库获取 cmake 和 ninja 的 deb 包路径 ----------
+          # 下载 Packages 文件
+          curl -L -o /tmp/Packages https://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
+
+          # 提取 cmake 的 Filename
+          CMAKE_DEB_PATH=$(awk '/^Package: cmake$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
+          NINJA_DEB_PATH=$(awk '/^Package: ninja$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
+
+          if [ -z "$CMAKE_DEB_PATH" ] || [ -z "$NINJA_DEB_PATH" ]; then
+            echo "Failed to find cmake or ninja package in Packages file"
+            exit 1
+          fi
+
+          echo "CMake deb path: $CMAKE_DEB_PATH"
+          echo "Ninja deb path: $NINJA_DEB_PATH"
+
+          # 下载 deb 包
+          CMAKE_DEB_URL="https://packages.termux.org/apt/termux-main/$CMAKE_DEB_PATH"
+          NINJA_DEB_URL="https://packages.termux.org/apt/termux-main/$NINJA_DEB_PATH"
+
+          curl -L -o /tmp/cmake.deb "$CMAKE_DEB_URL"
+          curl -L -o /tmp/ninja.deb "$NINJA_DEB_URL"
+
+          # ---------- 提取 cmake ----------
+          mkdir -p /tmp/cmake_deb
+          cd /tmp/cmake_deb
+          ar x /tmp/cmake.deb
           tar -xJf data.tar.xz
-          ls -la data/data/com.termux/files/usr/bin/cmake
-          file data/data/com.termux/files/usr/bin/cmake
+          cp data/data/com.termux/files/usr/bin/cmake $OLDPWD/package/ollvm-android-arm64/bin/
+          # 复制所有依赖库到工具链的 lib 目录
+          mkdir -p $OLDPWD/package/ollvm-android-arm64/lib
+          cp -r data/data/com.termux/files/usr/lib/*.so* $OLDPWD/package/ollvm-android-arm64/lib/ 2>/dev/null || true
+          cd $OLDPWD
 
-      - name: Extract ninja deb
-        run: |
-          mkdir ninja_extract
-          cd ninja_extract
-          ar x ../ninja.deb
+          # ---------- 提取 ninja ----------
+          mkdir -p /tmp/ninja_deb
+          cd /tmp/ninja_deb
+          ar x /tmp/ninja.deb
           tar -xJf data.tar.xz
-          ls -la data/data/com.termux/files/usr/bin/ninja
-          file data/data/com.termux/files/usr/bin/ninja
+          cp data/data/com.termux/files/usr/bin/ninja $OLDPWD/package/ollvm-android-arm64/bin/
+          cd $OLDPWD
 
-      - name: Copy extracted binaries to a test folder
-        run: |
-          mkdir -p test-package/bin
-          cp cmake_extract/data/data/com.termux/files/usr/bin/cmake test-package/bin/
-          cp ninja_extract/data/data/com.termux/files/usr/bin/ninja test-package/bin/
-          chmod +x test-package/bin/*
-          ls -la test-package/bin/
+          chmod +x package/ollvm-android-arm64/bin/cmake
+          chmod +x package/ollvm-android-arm64/bin/ninja
 
-      - name: Verify binaries are PIE and executable
-        run: |
-          echo "Check cmake:"
-          file test-package/bin/cmake
-          echo "Check ninja:"
-          file test-package/bin/ninja
-          # Try to run --version using qemu-user-static? (optional)
-          # For now, just verify they are ELF 64-bit LSB shared object (PIE)
+          # ---------- 处理 clang/clang++ 符号链接 ----------
+          cd package/ollvm-android-arm64/bin
+          CLANG_VERSION=$(ls clang-* 2>/dev/null | head -1 | sed 's/clang-//')
+          if [ -n "$CLANG_VERSION" ]; then
+            for f in clang clang++; do
+              if [ -L "$f" ]; then
+                rm "$f"
+                cp "clang-${CLANG_VERSION}" "$f"
+                chmod +x "$f"
+              fi
+            done
+          fi
+          cd ../../..
 
-      - name: Upload test package (optional)
+          # ---------- 打包（使用 gzip 压缩） ----------
+          tar -czf ollvm-android-arm64.tar.gz -C package ollvm-android-arm64
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: test-extracted-tools
-          path: test-package/
+          name: ollvm-android-arm64
+          path: ollvm-android-arm64.tar.gz
