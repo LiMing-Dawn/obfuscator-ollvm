@@ -29,7 +29,7 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake ninja-build python3
+          sudo apt install -y cmake ninja-build python3 patchelf
 
       - name: Download Android NDK (skip checksum)
         run: |
@@ -78,7 +78,7 @@ jobs:
           ninja -j$(nproc) install/strip
         working-directory: ${{ github.workspace }}
 
-      # 3. 准备打包产物（包含 cmake 和 ninja，从 Termux 动态获取）
+      # 3. 准备打包产物（包含 cmake 和 ninja，从 Termux 动态获取，并设置 RPATH）
       - name: Prepare package with outer directory and extra tools from Termux
         run: |
           # 创建临时打包目录，外层为 ollvm-android-arm64
@@ -86,10 +86,8 @@ jobs:
           cp -r ${INSTALL_DIR}/* package/ollvm-android-arm64/
 
           # ---------- 从 Termux 仓库获取 cmake 和 ninja 的 deb 包路径 ----------
-          # 下载 Packages 文件
           curl -L -o /tmp/Packages https://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
 
-          # 提取 cmake 的 Filename
           CMAKE_DEB_PATH=$(awk '/^Package: cmake$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
           NINJA_DEB_PATH=$(awk '/^Package: ninja$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
 
@@ -101,7 +99,6 @@ jobs:
           echo "CMake deb path: $CMAKE_DEB_PATH"
           echo "Ninja deb path: $NINJA_DEB_PATH"
 
-          # 下载 deb 包
           CMAKE_DEB_URL="https://packages.termux.org/apt/termux-main/$CMAKE_DEB_PATH"
           NINJA_DEB_URL="https://packages.termux.org/apt/termux-main/$NINJA_DEB_PATH"
 
@@ -113,11 +110,15 @@ jobs:
           cd /tmp/cmake_deb
           ar x /tmp/cmake.deb
           tar -xJf data.tar.xz
+          # 复制 cmake 二进制
           cp data/data/com.termux/files/usr/bin/cmake $OLDPWD/package/ollvm-android-arm64/bin/
-          # 复制所有依赖库到工具链的 lib 目录
+          # 复制全部库文件到工具链的 lib 目录
           mkdir -p $OLDPWD/package/ollvm-android-arm64/lib
-          cp -r data/data/com.termux/files/usr/lib/*.so* $OLDPWD/package/ollvm-android-arm64/lib/ 2>/dev/null || true
+          cp -r data/data/com.termux/files/usr/lib/* $OLDPWD/package/ollvm-android-arm64/lib/ 2>/dev/null || true
           cd $OLDPWD
+
+          # 使用 patchelf 设置 RPATH，使 cmake 从自身的 lib 目录加载依赖
+          patchelf --set-rpath '$ORIGIN/../lib' package/ollvm-android-arm64/bin/cmake
 
           # ---------- 提取 ninja ----------
           mkdir -p /tmp/ninja_deb
@@ -144,7 +145,7 @@ jobs:
           fi
           cd ../../..
 
-          # ---------- 打包（使用 gzip 压缩） ----------
+          # ---------- 打包 ----------
           tar -czf ollvm-android-arm64.tar.gz -C package ollvm-android-arm64
 
       - name: Upload artifact
