@@ -57,16 +57,14 @@ jobs:
           find . -name "libexpat*.so*" -type f -exec cp -L {} /tmp/package/lib/ \;
           ls -la /tmp/package/lib/
 
-      - name: Create wrapper script for cmake
+      - name: Create wrapper script for cmake (without heredoc)
         run: |
           CMAKE_FILE="/tmp/package/bin/cmake"
           if [ -f "$CMAKE_FILE" ]; then
             mv "$CMAKE_FILE" "${CMAKE_FILE}.real"
-            cat > "$CMAKE_FILE" << 'EOF'
-#!/system/bin/sh
-export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH
-exec $(dirname $0)/cmake.real "$@"
-EOF
+            echo '#!/system/bin/sh' > "$CMAKE_FILE"
+            echo 'export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH' >> "$CMAKE_FILE"
+            echo 'exec $(dirname $0)/cmake.real "$@"' >> "$CMAKE_FILE"
             chmod +x "$CMAKE_FILE"
             chmod +x "${CMAKE_FILE}.real"
             echo "Wrapper created"
