@@ -115,6 +115,7 @@ jobs:
             exit 1
           fi
           cp "$CMAKE_BIN" $OLDPWD/package/ollvm-android-arm64/bin/
+          chmod +x $OLDPWD/package/ollvm-android-arm64/bin/cmake
           cd $OLDPWD
 
           # ---------- 提取 ninja ----------
@@ -128,6 +129,7 @@ jobs:
             exit 1
           fi
           cp "$NINJA_BIN" $OLDPWD/package/ollvm-android-arm64/bin/
+          chmod +x $OLDPWD/package/ollvm-android-arm64/bin/ninja
           cd $OLDPWD
 
           # ---------- 提取 libexpat（cmake 依赖） ----------
@@ -140,18 +142,25 @@ jobs:
           cd $OLDPWD
           ls -la package/ollvm-android-arm64/lib/libexpat* || echo "libexpat not found"
 
-          # ---------- 创建 wrapper 脚本（替代 RPATH） ----------
+          # ---------- 创建 wrapper 脚本（含动态修复权限） ----------
           CMAKE_FILE="package/ollvm-android-arm64/bin/cmake"
           if [ -f "$CMAKE_FILE" ]; then
             mv "$CMAKE_FILE" "${CMAKE_FILE}.real"
-            echo '#!/system/bin/sh' > "$CMAKE_FILE"
-            echo 'export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH' >> "$CMAKE_FILE"
-            echo 'exec $(dirname $0)/cmake.real "$@"' >> "$CMAKE_FILE"
-            chmod +x "$CMAKE_FILE"
+            # 确保 cmake.real 有执行权限（即使之前丢失）
             chmod +x "${CMAKE_FILE}.real"
-            echo "✅ Wrapper created for cmake"
+            # 写入 wrapper 脚本，先尝试 chmod +x 再执行
+            cat > "$CMAKE_FILE" << 'EOF'
+#!/system/bin/sh
+REAL_CMAKE=$(dirname $0)/cmake.real
+chmod +x "$REAL_CMAKE" 2>/dev/null
+export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH
+exec "$REAL_CMAKE" "$@"
+EOF
+            chmod +x "$CMAKE_FILE"
+            echo "✅ Wrapper created for cmake with permission fix"
           else
             echo "⚠️  cmake not found, skipping wrapper"
+            exit 1
           fi
 
           # ---------- 处理 clang/clang++ 符号链接 ----------
