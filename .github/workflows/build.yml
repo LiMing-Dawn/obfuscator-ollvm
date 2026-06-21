@@ -142,20 +142,17 @@ jobs:
           cd $OLDPWD
           ls -la package/ollvm-android-arm64/lib/libexpat* || echo "libexpat not found"
 
-          # ---------- 创建 wrapper 脚本（含动态修复权限） ----------
+          # ---------- 创建 wrapper 脚本（使用 echo 避免 heredoc 问题） ----------
           CMAKE_FILE="package/ollvm-android-arm64/bin/cmake"
           if [ -f "$CMAKE_FILE" ]; then
             mv "$CMAKE_FILE" "${CMAKE_FILE}.real"
-            # 确保 cmake.real 有执行权限（即使之前丢失）
             chmod +x "${CMAKE_FILE}.real"
-            # 写入 wrapper 脚本，先尝试 chmod +x 再执行
-            cat > "$CMAKE_FILE" << 'EOF'
-#!/system/bin/sh
-REAL_CMAKE=$(dirname $0)/cmake.real
-chmod +x "$REAL_CMAKE" 2>/dev/null
-export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH
-exec "$REAL_CMAKE" "$@"
-EOF
+            # 用 echo 逐行写入 wrapper
+            echo '#!/system/bin/sh' > "$CMAKE_FILE"
+            echo 'REAL_CMAKE=$(dirname $0)/cmake.real' >> "$CMAKE_FILE"
+            echo 'chmod +x "$REAL_CMAKE" 2>/dev/null' >> "$CMAKE_FILE"
+            echo 'export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH' >> "$CMAKE_FILE"
+            echo 'exec "$REAL_CMAKE" "$@"' >> "$CMAKE_FILE"
             chmod +x "$CMAKE_FILE"
             echo "✅ Wrapper created for cmake with permission fix"
           else
