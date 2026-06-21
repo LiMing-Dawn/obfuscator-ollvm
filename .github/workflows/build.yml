@@ -112,13 +112,19 @@ jobs:
           tar -xJf data.tar.xz
           # 复制 cmake 二进制
           cp data/data/com.termux/files/usr/bin/cmake $OLDPWD/package/ollvm-android-arm64/bin/
-          # 复制全部库文件到工具链的 lib 目录
+          # 复制所有库文件（跟随符号链接，复制实际文件）
           mkdir -p $OLDPWD/package/ollvm-android-arm64/lib
-          cp -r data/data/com.termux/files/usr/lib/* $OLDPWD/package/ollvm-android-arm64/lib/ 2>/dev/null || true
+          cd data/data/com.termux/files/usr/lib
+          # 使用 find 复制所有 .so 文件（包括 .so.*），并且跟随符号链接，确保每个都是实际文件
+          find . -name "*.so*" -type f -exec cp -L {} $OLDPWD/package/ollvm-android-arm64/lib/ \; 2>/dev/null || true
           cd $OLDPWD
 
-          # 使用 patchelf 设置 RPATH，使 cmake 从自身的 lib 目录加载依赖
+          # 设置 RPATH
           patchelf --set-rpath '$ORIGIN/../lib' package/ollvm-android-arm64/bin/cmake
+
+          # 验证 RPATH 设置成功
+          echo "Verifying RPATH of cmake:"
+          readelf -d package/ollvm-android-arm64/bin/cmake | grep -i rpath || echo "No RPATH found!"
 
           # ---------- 提取 ninja ----------
           mkdir -p /tmp/ninja_deb
