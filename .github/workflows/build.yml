@@ -1,34 +1,32 @@
-name: Test Dynamic Extract with libexpat
+name: Test Build Package (with wrapper)
 
 on:
   workflow_dispatch:
 
 jobs:
-  extract-test:
+  test-build:
     runs-on: ubuntu-latest
     steps:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl file patchelf
+          sudo apt install -y curl file
 
       - name: Download Termux Packages file
         run: |
           curl -L -o /tmp/Packages https://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
 
-      - name: Extract deb URLs for cmake, ninja, and libexpat
+      - name: Extract deb URLs
         run: |
           CMAKE_DEB_PATH=$(awk '/^Package: cmake$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
           NINJA_DEB_PATH=$(awk '/^Package: ninja$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
           EXPAT_DEB_PATH=$(awk '/^Package: libexpat$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
-          
           echo "CMAKE_DEB_PATH=$CMAKE_DEB_PATH" >> $GITHUB_ENV
           echo "NINJA_DEB_PATH=$NINJA_DEB_PATH" >> $GITHUB_ENV
           echo "EXPAT_DEB_PATH=$EXPAT_DEB_PATH" >> $GITHUB_ENV
-          
-          echo "CMake deb path: $CMAKE_DEB_PATH"
-          echo "Ninja deb path: $NINJA_DEB_PATH"
-          echo "libexpat deb path: $EXPAT_DEB_PATH"
+          echo "CMake: $CMAKE_DEB_PATH"
+          echo "Ninja: $NINJA_DEB_PATH"
+          echo "libexpat: $EXPAT_DEB_PATH"
 
       - name: Download deb files
         run: |
@@ -41,33 +39,49 @@ jobs:
           mkdir -p /tmp/cmake_deb && cd /tmp/cmake_deb
           ar x /tmp/cmake.deb && tar -xJf data.tar.xz
           CMAKE_BIN=$(find . -type f -name "cmake" -executable | head -1)
-          mkdir -p /tmp/test-package/bin
-          cp "$CMAKE_BIN" /tmp/test-package/bin/
+          mkdir -p /tmp/package/bin
+          cp "$CMAKE_BIN" /tmp/package/bin/
 
       - name: Extract ninja
         run: |
           mkdir -p /tmp/ninja_deb && cd /tmp/ninja_deb
           ar x /tmp/ninja.deb && tar -xJf data.tar.xz
           NINJA_BIN=$(find . -type f -name "ninja" -executable | head -1)
-          cp "$NINJA_BIN" /tmp/test-package/bin/
+          cp "$NINJA_BIN" /tmp/package/bin/
 
-      - name: Extract libexpat (critical missing dependency)
+      - name: Extract libexpat
         run: |
           mkdir -p /tmp/expat_deb && cd /tmp/expat_deb
           ar x /tmp/expat.deb && tar -xJf data.tar.xz
-          mkdir -p /tmp/test-package/lib
-          # 复制 libexpat 相关的所有 .so 文件（跟随符号链接，复制实际文件）
-          find . -name "libexpat*.so*" -type f -exec cp -L {} /tmp/test-package/lib/ \;
-          echo "libexpat copied:"
-          ls -la /tmp/test-package/lib/libexpat*
+          mkdir -p /tmp/package/lib
+          find . -name "libexpat*.so*" -type f -exec cp -L {} /tmp/package/lib/ \;
+          ls -la /tmp/package/lib/
 
-      - name: Set RPATH for cmake
+      - name: Create wrapper script for cmake
         run: |
-          patchelf --set-rpath '$ORIGIN/../lib' /tmp/test-package/bin/cmake
-          readelf -d /tmp/test-package/bin/cmake | grep -i rpath
+          CMAKE_FILE="/tmp/package/bin/cmake"
+          if [ -f "$CMAKE_FILE" ]; then
+            mv "$CMAKE_FILE" "${CMAKE_FILE}.real"
+            cat > "$CMAKE_FILE" << 'EOF'
+#!/system/bin/sh
+export LD_LIBRARY_PATH=$(dirname $0)/../lib:$LD_LIBRARY_PATH
+exec $(dirname $0)/cmake.real "$@"
+EOF
+            chmod +x "$CMAKE_FILE"
+            chmod +x "${CMAKE_FILE}.real"
+            echo "Wrapper created"
+            cat "$CMAKE_FILE"
+          else
+            echo "cmake not found"
+            exit 1
+          fi
+
+      - name: List final package structure
+        run: |
+          tree /tmp/package || find /tmp/package -type f
 
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
-          name: test-extracted-tools-with-expat
-          path: /tmp/test-package/
+          name: test-package-with-wrapper
+          path: /tmp/package/
