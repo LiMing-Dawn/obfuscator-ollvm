@@ -1,4 +1,4 @@
-name: Test Dynamic Extract of cmake & ninja from Termux
+name: Test Dynamic Extract with libexpat
 
 on:
   workflow_dispatch:
@@ -15,88 +15,59 @@ jobs:
       - name: Download Termux Packages file
         run: |
           curl -L -o /tmp/Packages https://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
-          echo "Packages file downloaded"
 
-      - name: Extract deb URLs for cmake and ninja
-        id: get_urls
+      - name: Extract deb URLs for cmake, ninja, and libexpat
         run: |
           CMAKE_DEB_PATH=$(awk '/^Package: cmake$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
           NINJA_DEB_PATH=$(awk '/^Package: ninja$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
+          EXPAT_DEB_PATH=$(awk '/^Package: libexpat$/{flag=1} flag && /^Filename: /{print $2; exit}' /tmp/Packages)
+          
           echo "CMAKE_DEB_PATH=$CMAKE_DEB_PATH" >> $GITHUB_ENV
           echo "NINJA_DEB_PATH=$NINJA_DEB_PATH" >> $GITHUB_ENV
+          echo "EXPAT_DEB_PATH=$EXPAT_DEB_PATH" >> $GITHUB_ENV
+          
           echo "CMake deb path: $CMAKE_DEB_PATH"
           echo "Ninja deb path: $NINJA_DEB_PATH"
+          echo "libexpat deb path: $EXPAT_DEB_PATH"
 
       - name: Download deb files
         run: |
           curl -L -o /tmp/cmake.deb "https://packages.termux.org/apt/termux-main/$CMAKE_DEB_PATH"
           curl -L -o /tmp/ninja.deb "https://packages.termux.org/apt/termux-main/$NINJA_DEB_PATH"
-          ls -lh /tmp/*.deb
-          file /tmp/cmake.deb
-          file /tmp/ninja.deb
+          curl -L -o /tmp/expat.deb "https://packages.termux.org/apt/termux-main/$EXPAT_DEB_PATH"
 
-      - name: Dynamic extract cmake
+      - name: Extract cmake
         run: |
-          mkdir -p /tmp/cmake_deb
-          cd /tmp/cmake_deb
-          ar x /tmp/cmake.deb
-          tar -xJf data.tar.xz
-          # Find cmake executable (ignore symlinks, find actual file)
+          mkdir -p /tmp/cmake_deb && cd /tmp/cmake_deb
+          ar x /tmp/cmake.deb && tar -xJf data.tar.xz
           CMAKE_BIN=$(find . -type f -name "cmake" -executable | head -1)
-          if [ -z "$CMAKE_BIN" ]; then
-            echo "Cannot find cmake binary in extracted files"
-            exit 1
-          fi
-          echo "Found cmake at: $CMAKE_BIN"
-          file "$CMAKE_BIN"
-          # Create test package structure
           mkdir -p /tmp/test-package/bin
           cp "$CMAKE_BIN" /tmp/test-package/bin/
-          mkdir -p /tmp/test-package/lib
-          # Copy all shared libraries (follow symlinks, copy real files)
-          find . -name "*.so*" -type f -exec cp -L {} /tmp/test-package/lib/ \; 2>/dev/null || true
-          echo "Number of libraries copied: $(ls -1 /tmp/test-package/lib/ | wc -l)"
-          cd $OLDPWD
 
-      - name: Dynamic extract ninja
+      - name: Extract ninja
         run: |
-          mkdir -p /tmp/ninja_deb
-          cd /tmp/ninja_deb
-          ar x /tmp/ninja.deb
-          tar -xJf data.tar.xz
+          mkdir -p /tmp/ninja_deb && cd /tmp/ninja_deb
+          ar x /tmp/ninja.deb && tar -xJf data.tar.xz
           NINJA_BIN=$(find . -type f -name "ninja" -executable | head -1)
-          if [ -z "$NINJA_BIN" ]; then
-            echo "Cannot find ninja binary in extracted files"
-            exit 1
-          fi
-          echo "Found ninja at: $NINJA_BIN"
-          file "$NINJA_BIN"
           cp "$NINJA_BIN" /tmp/test-package/bin/
+
+      - name: Extract libexpat (critical missing dependency)
+        run: |
+          mkdir -p /tmp/expat_deb && cd /tmp/expat_deb
+          ar x /tmp/expat.deb && tar -xJf data.tar.xz
+          mkdir -p /tmp/test-package/lib
+          # 复制 libexpat 相关的所有 .so 文件（跟随符号链接，复制实际文件）
+          find . -name "libexpat*.so*" -type f -exec cp -L {} /tmp/test-package/lib/ \;
+          echo "libexpat copied:"
+          ls -la /tmp/test-package/lib/libexpat*
 
       - name: Set RPATH for cmake
         run: |
           patchelf --set-rpath '$ORIGIN/../lib' /tmp/test-package/bin/cmake
-          echo "RPATH set:"
-          readelf -d /tmp/test-package/bin/cmake | grep -i rpath || echo "No RPATH found!"
-
-      - name: Verify extracted binaries and libraries
-        run: |
-          echo "=== cmake ==="
-          file /tmp/test-package/bin/cmake
-          ldd /tmp/test-package/bin/cmake 2>/dev/null || echo "ldd not available (expected for cross-compiled binaries)"
-          echo "=== ninja ==="
-          file /tmp/test-package/bin/ninja
-          echo "=== Some libraries ==="
-          ls -la /tmp/test-package/lib/ | head -30
-          # Check if libexpat.so.1 exists
-          if ls /tmp/test-package/lib/libexpat.so.1* 1> /dev/null 2>&1; then
-            echo "libexpat.so.1 found"
-          else
-            echo "libexpat.so.1 NOT found"
-          fi
+          readelf -d /tmp/test-package/bin/cmake | grep -i rpath
 
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
-          name: test-extracted-tools
+          name: test-extracted-tools-with-expat
           path: /tmp/test-package/
